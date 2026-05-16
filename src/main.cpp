@@ -73,6 +73,8 @@ void loadConfig() {
     Serial.printf("[CFG] Skip GPS        : %s\n",    g_skipGps ? "yes" : "no");
     Serial.printf("[CFG] GPS timeout     : %lu s\n", g_gpsTimeoutMs / 1000);
     Serial.printf("[CFG] Update interval : %lu s\n", g_updateIntervalMs / 1000);
+    if (g_updateIntervalMs < 15000)
+        Serial.println("[CFG] WARNING: update_interval_seconds < 15 — ThingSpeak free tier will reject updates!");
 }
 
 // ─── Modem power ─────────────────────────────────────────────────────────────
