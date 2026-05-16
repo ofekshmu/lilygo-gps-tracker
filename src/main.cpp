@@ -1,22 +1,20 @@
 // TINY_GSM_MODEM_SIM7600 and TINY_GSM_RX_BUFFER are set in platformio.ini build_flags
 #include <Arduino.h>
-#include <WiFi.h>
 #include <TinyGsmClient.h>
 #include <ArduinoHttpClient.h>
 #include "config.h"
 
 HardwareSerial modemSerial(1);
 TinyGsm        modem(modemSerial);
-
-WiFiClient wifiClient;
-HttpClient http(wifiClient, THINGSPEAK_HOST, THINGSPEAK_PORT);
+TinyGsmClient  gsmClient(modem);
+HttpClient     http(gsmClient, THINGSPEAK_HOST, THINGSPEAK_PORT);
 
 // ─── Modem power ─────────────────────────────────────────────────────────────
 
 void powerOnModem() {
     pinMode(MODEM_PWRKEY, OUTPUT);
     pinMode(MODEM_FLIGHT, OUTPUT);
-    digitalWrite(MODEM_FLIGHT, HIGH);  // disable flight mode
+    digitalWrite(MODEM_FLIGHT, HIGH);
 
     digitalWrite(MODEM_PWRKEY, LOW);
     delay(100);
@@ -26,24 +24,40 @@ void powerOnModem() {
     delay(5000);
 }
 
-// ─── WiFi ────────────────────────────────────────────────────────────────────
+// ─── Cellular connection ──────────────────────────────────────────────────────
 
-bool connectToWiFi() {
-    Serial.printf("[WiFi] Connecting to \"%s\"...", WIFI_SSID);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-
-    uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED) {
-        if (millis() - start > 20000) {
-            Serial.println(" FAIL");
-            return false;
-        }
-        delay(500);
-        Serial.print(".");
+bool connectToNetwork() {
+    Serial.print("[NET] Waiting for network registration...");
+    if (!modem.waitForNetwork(60000L)) {
+        Serial.println(" FAIL");
+        return false;
     }
-
     Serial.println(" OK");
-    Serial.printf("[WiFi] IP: %s\n", WiFi.localIP().toString().c_str());
+    Serial.printf("[NET] Operator: %s\n", modem.getOperator().c_str());
+
+    // Set APN manually via raw AT commands (more reliable than gprsConnect)
+    Serial.print("[NET] Setting APN...");
+    modem.sendAT(GF("+CGDCONT=1,\"IP\",\"" APN "\""));
+    if (modem.waitResponse(5000) != 1) {
+        Serial.println(" FAIL");
+        return false;
+    }
+    Serial.println(" OK");
+
+    Serial.print("[NET] Activating data connection...");
+    modem.sendAT(GF("+CGACT=1,1"));
+    if (modem.waitResponse(15000) != 1) {
+        Serial.println(" FAIL");
+        return false;
+    }
+    Serial.println(" OK");
+
+    // Mark GPRS as connected inside TinyGSM so the TCP client works
+    modem.sendAT(GF("+CGPADDR=1"));
+    String ipResp = "";
+    modem.waitResponse(3000, ipResp);
+    Serial.printf("[NET] IP: %s\n", ipResp.c_str());
+
     return true;
 }
 
@@ -113,13 +127,7 @@ bool sendToThingSpeak(float lat, float lon, float speed, float alt) {
 void setup() {
     Serial.begin(115200);
     delay(200);
-    Serial.println("\n=== LilyGo SIM7600E GPS Tracker (WiFi mode) ===");
-
-    if (!connectToWiFi()) {
-        Serial.println("[WiFi] Failed — restarting in 10 s");
-        delay(10000);
-        ESP.restart();
-    }
+    Serial.println("\n=== LilyGo SIM7600E GPS Tracker (SIM mode) ===");
 
     modemSerial.begin(115200, SERIAL_8N1, MODEM_RX, MODEM_TX);
     powerOnModem();
@@ -132,14 +140,15 @@ void setup() {
     }
     Serial.println(" OK");
     Serial.printf("[MODEM] %s\n", modem.getModemInfo().c_str());
+
+    if (!connectToNetwork()) {
+        Serial.println("[NET] Failed — restarting in 10 s");
+        delay(10000);
+        ESP.restart();
+    }
 }
 
 void loop() {
-    if (WiFi.status() != WL_CONNECTED) {
-        Serial.println("[WiFi] Connection lost, reconnecting...");
-        connectToWiFi();
-    }
-
     float lat = 0, lon = 0, speed = 0, alt = 0;
 
     if (getGPSFix(lat, lon, speed, alt)) {
